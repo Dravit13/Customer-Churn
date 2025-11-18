@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, RandomizedSearchCV
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
@@ -222,31 +222,33 @@ class ChurnPredictor:
             'Random Forest': {
                 'model': RandomForestClassifier(random_state=42, class_weight='balanced'),
                 'params': {
-                    'n_estimators': [50, 100],
-                    'max_depth': [5, 8, 10],  # Reduced max depth to prevent overfitting
-                    'min_samples_split': [10, 20, 30],  # Increased to reduce overfitting
-                    'min_samples_leaf': [4, 6, 8],  # Increased to reduce overfitting
-                    'max_features': ['sqrt', 'log2', 0.5]  # Limit features per tree
+                    'n_estimators': [100, 150, 200],  # More trees for better accuracy
+                    'max_depth': [8, 10, 12],  # Balanced depth for accuracy vs overfitting
+                    'min_samples_split': [15, 20, 25],  # Prevents overfitting while maintaining accuracy
+                    'min_samples_leaf': [5, 8, 10],  # Balanced regularization
+                    'max_features': ['sqrt', 'log2']  # Feature diversity
                 }
             }
         }
         
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)  # 3 folds for speed
         target_accuracy = 0.87
         results = {}
         
         for name, config in models_config.items():
-            # GridSearchCV for hyperparameter tuning
-            grid_search = GridSearchCV(
+            # RandomizedSearchCV for faster hyperparameter tuning
+            random_search = RandomizedSearchCV(
                 config['model'],
                 config['params'],
+                n_iter=15,  # Test 15 random combinations (faster than full grid)
                 cv=cv,
                 scoring='accuracy',
                 n_jobs=-1,
-                verbose=0
+                verbose=0,
+                random_state=42
             )
-            grid_search.fit(X_train_scaled, y_train)
-            best_model = grid_search.best_estimator_
+            random_search.fit(X_train_scaled, y_train)
+            best_model = random_search.best_estimator_
             
             # Cross-validation scores
             cv_scores = cross_val_score(
@@ -279,7 +281,7 @@ class ChurnPredictor:
                 'roc_auc': roc_auc_score(y_test, y_pred_proba),
                 'y_pred': y_pred,
                 'y_pred_proba': y_pred_proba,
-                'best_params': grid_search.best_params_
+                'best_params': random_search.best_params_
             }
         
         # Select Random Forest model
@@ -482,7 +484,7 @@ def main():
             # Step 5: Train Models
             status_text.text("🤖 Step 5/6: Training Models...")
             progress_bar.progress(90)
-            results, best_model = predictor.train_models(X_train_scaled, X_test_scaled, y_train, y_test)
+            results, best_model_name = predictor.train_models(X_train_scaled, X_test_scaled, y_train, y_test)
             
             status_text.text("✅ Step 5/6: Models Trained")
             progress_bar.progress(100)

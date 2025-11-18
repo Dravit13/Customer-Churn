@@ -15,7 +15,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, RandomizedSearchCV
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
@@ -311,23 +311,23 @@ class ChurnPredictor:
         print("STEP 6: Model Training with Cross-Validation (Random Forest)")
         print("=" * 60)
         
-        # Define Random Forest model with regularization to prevent overfitting
-        # Target accuracy: ~87%
+        # Define Random Forest model optimized for accuracy with minimal overfitting
+        # Using RandomizedSearchCV for faster, more efficient hyperparameter search
         models_config = {
             'Random Forest': {
                 'model': RandomForestClassifier(random_state=42, class_weight='balanced'),
                 'params': {
-                    'n_estimators': [50, 100],
-                    'max_depth': [5, 8, 10],  # Reduced max depth to prevent overfitting
-                    'min_samples_split': [10, 20, 30],  # Increased to reduce overfitting
-                    'min_samples_leaf': [4, 6, 8],  # Increased to reduce overfitting
-                    'max_features': ['sqrt', 'log2', 0.5]  # Limit features per tree
+                    'n_estimators': [100, 150, 200],  # More trees for better accuracy
+                    'max_depth': [8, 10, 12],  # Balanced depth for accuracy vs overfitting
+                    'min_samples_split': [15, 20, 25],  # Prevents overfitting while maintaining accuracy
+                    'min_samples_leaf': [5, 8, 10],  # Balanced regularization
+                    'max_features': ['sqrt', 'log2']  # Feature diversity
                 }
             }
         }
         
-        # Cross-validation setup
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        # Cross-validation setup (3 folds for faster training)
+        cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
         target_accuracy = 0.87
         
         results = {}
@@ -337,23 +337,26 @@ class ChurnPredictor:
             print(f"Training {name}...")
             print(f"{'='*60}")
             
-            # Perform GridSearchCV for hyperparameter tuning
-            print("  Performing GridSearchCV for hyperparameter tuning...")
-            grid_search = GridSearchCV(
+            # Perform RandomizedSearchCV for faster hyperparameter tuning
+            print("  Performing RandomizedSearchCV for hyperparameter tuning...")
+            print("  (Searching 15 random combinations for faster training)")
+            random_search = RandomizedSearchCV(
                 config['model'],
                 config['params'],
+                n_iter=15,  # Test 15 random combinations (much faster than full grid)
                 cv=cv,
                 scoring='accuracy',
                 n_jobs=-1,
-                verbose=0
+                verbose=0,
+                random_state=42
             )
-            grid_search.fit(self.X_train_scaled, self.y_train)
+            random_search.fit(self.X_train_scaled, self.y_train)
             
-            best_model = grid_search.best_estimator_
-            print(f"  Best parameters: {grid_search.best_params_}")
+            best_model = random_search.best_estimator_
+            print(f"  Best parameters: {random_search.best_params_}")
             
-            # Cross-validation scores
-            print("  Performing 5-fold cross-validation...")
+            # Cross-validation scores (using same CV for consistency)
+            print("  Performing cross-validation...")
             cv_scores = cross_val_score(
                 best_model, self.X_train_scaled, self.y_train,
                 cv=cv, scoring='accuracy', n_jobs=-1
@@ -403,7 +406,7 @@ class ChurnPredictor:
                 'roc_auc': roc_auc,
                 'y_pred': y_pred,
                 'y_pred_proba': y_pred_proba,
-                'best_params': grid_search.best_params_
+                'best_params': random_search.best_params_
             }
             
             print(f"  Final Test Metrics:")
@@ -429,10 +432,16 @@ class ChurnPredictor:
         
         # Check overfitting and suggest improvements if needed
         if best_result['overfitting_gap'] > 0.05:
-            print(f"\n⚠ Overfitting detected! Consider:")
-            print(f"  - Further reducing max_depth")
-            print(f"  - Increasing min_samples_split and min_samples_leaf")
-            print(f"  - Using max_features='sqrt' or 'log2'")
+            print(f"\n⚠ Overfitting detected! Current gap: {best_result['overfitting_gap']:.4f}")
+            print(f"  If gap is still > 5%, consider:")
+            print(f"  - Further reducing max_depth to [3, 5]")
+            print(f"  - Increasing min_samples_split to [30, 50, 100]")
+            print(f"  - Increasing min_samples_leaf to [10, 15, 20]")
+            print(f"  - Reducing n_estimators to [30, 50]")
+        elif best_result['overfitting_gap'] > 0.02:
+            print(f"\n✓ Acceptable overfitting (gap: {best_result['overfitting_gap']:.4f})")
+        else:
+            print(f"\n✓ Excellent generalization (overfitting gap: {best_result['overfitting_gap']:.4f})")
         
         # Check if target accuracy is achieved
         if abs(best_result['accuracy'] - target_accuracy) < 0.02:
