@@ -404,6 +404,7 @@ def load_saved_models():
         scaler_path = os.path.join(models_dir, 'scaler.pkl') if os.path.exists(os.path.join(models_dir, 'scaler.pkl')) else 'scaler.pkl'
         pca_path = os.path.join(models_dir, 'pca.pkl') if os.path.exists(os.path.join(models_dir, 'pca.pkl')) else 'pca.pkl'
         encoders_path = os.path.join(models_dir, 'label_encoders.pkl') if os.path.exists(os.path.join(models_dir, 'label_encoders.pkl')) else 'label_encoders.pkl'
+        feature_names_path = os.path.join(models_dir, 'feature_names.pkl') if os.path.exists(os.path.join(models_dir, 'feature_names.pkl')) else 'feature_names.pkl'
         
         models['rf'] = joblib.load(rf_path)
         models['lr'] = joblib.load(lr_path)
@@ -411,12 +412,30 @@ def load_saved_models():
         models['pca'] = joblib.load(pca_path) if os.path.exists(pca_path) else None
         models['encoders'] = joblib.load(encoders_path) if os.path.exists(encoders_path) else {}
         
+        # Load feature names
+        if os.path.exists(feature_names_path):
+            feature_names_data = joblib.load(feature_names_path)
+            # feature_names.pkl stores 'original_features' key
+            if isinstance(feature_names_data, dict):
+                models['feature_names'] = feature_names_data.get('original_features', feature_names_data.get('feature_names', []))
+            elif isinstance(feature_names_data, list):
+                models['feature_names'] = feature_names_data
+            else:
+                models['feature_names'] = []
+        else:
+            models['feature_names'] = None
+        
         # Load metadata (prefer JSON, fallback to PKL)
         if os.path.exists('model_metadata.json'):
             with open('model_metadata.json', 'r') as f:
                 models['metadata'] = json.load(f)
+                # Try to get feature names from metadata if not loaded separately
+                if models['feature_names'] is None and 'feature_names' in models['metadata']:
+                    models['feature_names'] = models['metadata']['feature_names']
         elif os.path.exists('model_metadata.pkl'):
             models['metadata'] = joblib.load('model_metadata.pkl')
+            if models['feature_names'] is None and 'feature_names' in models['metadata']:
+                models['feature_names'] = models['metadata']['feature_names']
         else:
             models['metadata'] = None
             
@@ -428,14 +447,82 @@ def load_saved_models():
 def predict_churn(user_input, models):
     """Predict churn for user input"""
     try:
-        # Expected feature order (excluding CustomerID and Churn)
-        feature_order = [
-            'Tenure', 'PreferredLoginDevice', 'CityTier', 'WarehouseToHome',
-            'PreferredPaymentMode', 'Gender', 'HourSpendOnApp', 'NumberOfDeviceRegistered',
-            'PreferedOrderCat', 'SatisfactionScore', 'MaritalStatus', 'NumberOfAddress',
-            'Complain', 'OrderAmountHikeFromlastYear', 'CouponUsed', 'OrderCount',
-            'DaySinceLastOrder', 'CashbackAmount'
-        ]
+        # Check expected number of features from scaler
+        expected_features = None
+        if models.get('scaler') and hasattr(models['scaler'], 'n_features_in_'):
+            expected_features = models['scaler'].n_features_in_
+        
+        # Get encoder keys (categorical features only)
+        encoder_keys = [k for k in models.get('encoders', {}).keys() if k != 'target']
+        
+        # Priority 1: Use saved feature_names if available and matches expected count
+        feature_order = None
+        if models.get('feature_names') and isinstance(models['feature_names'], list):
+            if expected_features is None or len(models['feature_names']) == expected_features:
+                feature_order = models['feature_names']
+        
+        # Priority 2: Try metadata feature_names
+        if feature_order is None and models.get('metadata'):
+            if 'feature_names' in models['metadata']:
+                meta_features = models['metadata']['feature_names']
+                if isinstance(meta_features, list) and (expected_features is None or len(meta_features) == expected_features):
+                    feature_order = meta_features
+        
+        # Priority 3: Combine encoder keys with known numerical features
+        if feature_order is None:
+            # Known numerical features (not in encoders)
+            numerical_features = ['Tenure', 'CityTier', 'WarehouseToHome', 'HourSpendOnApp', 
+                                'NumberOfDeviceRegistered', 'SatisfactionScore', 'NumberOfAddress',
+                                'Complain', 'OrderAmountHikeFromlastYear', 'CouponUsed', 
+                                'OrderCount', 'DaySinceLastOrder', 'CashbackAmount']
+            
+            # Combine categorical (from encoders) and numerical features
+            all_features = list(set(encoder_keys + numerical_features))
+            
+            # If we have expected_features, validate count
+            if expected_features:
+                if len(all_features) == expected_features:
+                    # Sort to maintain consistent order
+                    feature_order = sorted(all_features)
+                else:
+                    # Try to find missing features - check common dataset columns
+                    common_features = [
+                        'Tenure', 'PreferredLoginDevice', 'CityTier', 'WarehouseToHome',
+                        'PreferredPaymentMode', 'Gender', 'HourSpendOnApp', 'NumberOfDeviceRegistered',
+                        'PreferedOrderCat', 'SatisfactionScore', 'MaritalStatus', 'NumberOfAddress',
+                        'Complain', 'OrderAmountHikeFromlastYear', 'CouponUsed', 'OrderCount',
+                        'DaySinceLastOrder', 'CashbackAmount'
+                    ]
+                    # Add any missing from common list
+                    missing = [f for f in common_features if f not in all_features]
+                    all_features.extend(missing)
+                    all_features = list(set(all_features))
+                    
+                    if len(all_features) == expected_features:
+                        feature_order = sorted(all_features)
+                    else:
+                        # Last resort: use common features list
+                        feature_order = common_features[:expected_features] if len(common_features) >= expected_features else common_features
+            else:
+                feature_order = sorted(all_features)
+        
+        # Final fallback: use default feature list
+        if feature_order is None:
+            feature_order = [
+                'Tenure', 'PreferredLoginDevice', 'CityTier', 'WarehouseToHome',
+                'PreferredPaymentMode', 'Gender', 'HourSpendOnApp', 'NumberOfDeviceRegistered',
+                'PreferedOrderCat', 'SatisfactionScore', 'MaritalStatus', 'NumberOfAddress',
+                'Complain', 'OrderAmountHikeFromlastYear', 'CouponUsed', 'OrderCount',
+                'DaySinceLastOrder', 'CashbackAmount'
+            ]
+        
+        # Final validation
+        if expected_features and len(feature_order) != expected_features:
+            st.error(f"Critical error: Feature count mismatch! Expected {expected_features} features, but got {len(feature_order)}.")
+            st.error(f"Feature order ({len(feature_order)}): {feature_order}")
+            st.error(f"Encoder keys ({len(encoder_keys)}): {encoder_keys}")
+            st.error("Please ensure feature_names.pkl contains the correct feature list, or retrain the model.")
+            return None
         
         # Encode categorical features
         encoded_input = {}
@@ -452,13 +539,21 @@ def predict_churn(user_input, models):
                         encoded_input[col] = 0
                 else:
                     # Numerical feature
-                    encoded_input[col] = float(value)
+                    try:
+                        encoded_input[col] = float(value)
+                    except (ValueError, TypeError):
+                        encoded_input[col] = 0.0
             else:
                 # Missing feature - use 0 or median
                 encoded_input[col] = 0.0
         
-        # Convert to numpy array in correct order
-        feature_values = np.array([encoded_input[col] for col in feature_order]).reshape(1, -1)
+        # Convert to numpy array in correct order - ensure all features are present
+        feature_values = np.array([encoded_input.get(col, 0.0) for col in feature_order]).reshape(1, -1)
+        
+        # Final check before scaling
+        if expected_features and feature_values.shape[1] != expected_features:
+            st.error(f"Feature array shape mismatch: Got {feature_values.shape[1]} features, expected {expected_features}")
+            return None
         
         # Scale features
         scaled_features = models['scaler'].transform(feature_values)

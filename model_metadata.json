@@ -26,7 +26,5 @@
       "solver": "liblinear",
       "C": 1.0
     }
-  },
-  "pca_used": true,
-  "pca_variance_retained": 0.9665265975366332
+  }
 }
