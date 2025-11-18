@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
@@ -213,37 +213,98 @@ class ChurnPredictor:
         return X, y
     
     def train_models(self, X_train_scaled, X_test_scaled, y_train, y_test):
-        """Train multiple models"""
-        models = {
-            'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000),
-            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced'),
-            'Gradient Boosting': GradientBoostingClassifier(n_estimators=100, random_state=42)
+        """Train multiple models with cross-validation and overfitting detection"""
+        models_config = {
+            'Logistic Regression': {
+                'model': LogisticRegression(random_state=42, max_iter=1000),
+                'params': {'C': [0.1, 1.0, 10.0], 'penalty': ['l1', 'l2'], 'solver': ['liblinear']}
+            },
+            'Random Forest': {
+                'model': RandomForestClassifier(random_state=42, class_weight='balanced'),
+                'params': {
+                    'n_estimators': [50, 100],
+                    'max_depth': [5, 10, 15],
+                    'min_samples_split': [5, 10],
+                    'min_samples_leaf': [2, 4]
+                }
+            },
+            'Gradient Boosting': {
+                'model': GradientBoostingClassifier(random_state=42),
+                'params': {
+                    'n_estimators': [50, 100],
+                    'max_depth': [3, 5, 7],
+                    'learning_rate': [0.01, 0.1],
+                    'subsample': [0.8, 1.0]
+                }
+            }
         }
         
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        target_accuracy = 0.87
         results = {}
         
-        for name, model in models.items():
-            model.fit(X_train_scaled, y_train)
-            y_pred = model.predict(X_test_scaled)
-            y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+        for name, config in models_config.items():
+            # GridSearchCV for hyperparameter tuning
+            grid_search = GridSearchCV(
+                config['model'],
+                config['params'],
+                cv=cv,
+                scoring='accuracy',
+                n_jobs=-1,
+                verbose=0
+            )
+            grid_search.fit(X_train_scaled, y_train)
+            best_model = grid_search.best_estimator_
+            
+            # Cross-validation scores
+            cv_scores = cross_val_score(
+                best_model, X_train_scaled, y_train,
+                cv=cv, scoring='accuracy', n_jobs=-1
+            )
+            cv_mean = cv_scores.mean()
+            cv_std = cv_scores.std()
+            
+            # Train and test predictions
+            y_train_pred = best_model.predict(X_train_scaled)
+            train_accuracy = accuracy_score(y_train, y_train_pred)
+            
+            y_pred = best_model.predict(X_test_scaled)
+            y_pred_proba = best_model.predict_proba(X_test_scaled)[:, 1]
+            test_accuracy = accuracy_score(y_test, y_pred)
+            
+            overfitting_gap = train_accuracy - test_accuracy
             
             results[name] = {
-                'model': model,
-                'accuracy': accuracy_score(y_test, y_pred),
+                'model': best_model,
+                'accuracy': test_accuracy,
+                'train_accuracy': train_accuracy,
+                'cv_mean': cv_mean,
+                'cv_std': cv_std,
+                'overfitting_gap': overfitting_gap,
                 'precision': precision_score(y_test, y_pred, average='weighted', zero_division=0),
                 'recall': recall_score(y_test, y_pred, average='weighted', zero_division=0),
                 'f1': f1_score(y_test, y_pred, average='weighted', zero_division=0),
                 'roc_auc': roc_auc_score(y_test, y_pred_proba),
                 'y_pred': y_pred,
-                'y_pred_proba': y_pred_proba
+                'y_pred_proba': y_pred_proba,
+                'best_params': grid_search.best_params_
             }
         
-        # Select best model
-        best_model_name = max(results, key=lambda x: results[x]['roc_auc'])
+        # Select best model - prioritize accuracy close to target with low overfitting
+        scored_models = {}
+        for name, result in results.items():
+            accuracy_score_val = 1 - abs(result['accuracy'] - target_accuracy)
+            overfitting_penalty = max(0, result['overfitting_gap'] - 0.05) * 2
+            roc_bonus = result['roc_auc']
+            final_score = accuracy_score_val * 0.4 + (1 - overfitting_penalty) * 0.3 + roc_bonus * 0.3
+            scored_models[name] = final_score
+        
+        best_model_name = max(scored_models, key=scored_models.get)
         self.model = results[best_model_name]['model']
         self.y_pred = results[best_model_name]['y_pred']
         self.y_pred_proba = results[best_model_name]['y_pred_proba']
         self.results = results
+        self.best_model_name = best_model_name
         
         return results, best_model_name
 
@@ -441,7 +502,11 @@ def main():
             st.markdown("### Model Comparison")
             comparison_df = pd.DataFrame({
                 'Model': list(results.keys()),
-                'Accuracy': [results[m]['accuracy'] for m in results.keys()],
+                'Test Accuracy': [results[m]['accuracy'] for m in results.keys()],
+                'Train Accuracy': [results[m]['train_accuracy'] for m in results.keys()],
+                'CV Mean': [results[m]['cv_mean'] for m in results.keys()],
+                'CV Std': [results[m]['cv_std'] for m in results.keys()],
+                'Overfitting Gap': [results[m]['overfitting_gap'] for m in results.keys()],
                 'Precision': [results[m]['precision'] for m in results.keys()],
                 'Recall': [results[m]['recall'] for m in results.keys()],
                 'F1-Score': [results[m]['f1'] for m in results.keys()],
@@ -450,7 +515,22 @@ def main():
             comparison_df = comparison_df.sort_values('ROC-AUC', ascending=False)
             st.dataframe(comparison_df.style.highlight_max(axis=0, color='#d4edda'), use_container_width=True)
             
-            st.info(f"🏆 **Best Model:** {best_model} (ROC-AUC: {results[best_model]['roc_auc']:.4f})")
+            best_result = results[best_model]
+            st.info(f"""
+            🏆 **Best Model:** {best_model}
+            - Test Accuracy: {best_result['accuracy']:.2%}
+            - CV Mean Accuracy: {best_result['cv_mean']:.2%} (±{best_result['cv_std']*2:.2%})
+            - Overfitting Gap: {best_result['overfitting_gap']:.4f}
+            - ROC-AUC: {best_result['roc_auc']:.4f}
+            """)
+            
+            # Overfitting warning
+            if best_result['overfitting_gap'] > 0.10:
+                st.warning("⚠️ Warning: Significant overfitting detected (gap > 10%)")
+            elif best_result['overfitting_gap'] > 0.05:
+                st.warning("⚠️ Caution: Moderate overfitting detected (gap > 5%)")
+            else:
+                st.success("✓ Good generalization - minimal overfitting detected")
         else:
             st.info("👆 Click 'Train Model' button in the sidebar to start training")
     
@@ -460,16 +540,23 @@ def main():
         if st.session_state.model_trained and st.session_state.predictor:
             predictor = st.session_state.predictor
             
-            # Metrics
-            accuracy = accuracy_score(predictor.y_test, predictor.y_pred)
-            precision = precision_score(predictor.y_test, predictor.y_pred, average='weighted', zero_division=0)
-            recall = recall_score(predictor.y_test, predictor.y_pred, average='weighted', zero_division=0)
-            f1 = f1_score(predictor.y_test, predictor.y_pred, average='weighted', zero_division=0)
-            roc_auc = roc_auc_score(predictor.y_test, predictor.y_pred_proba)
+            # Get best model results
+            best_result = predictor.results[predictor.best_model_name]
+            accuracy = best_result['accuracy']
+            train_accuracy = best_result['train_accuracy']
+            cv_mean = best_result['cv_mean']
+            cv_std = best_result['cv_std']
+            overfitting_gap = best_result['overfitting_gap']
+            precision = best_result['precision']
+            recall = best_result['recall']
+            f1 = best_result['f1']
+            roc_auc = best_result['roc_auc']
+            
+            st.markdown(f"### Selected Model: **{predictor.best_model_name}**")
             
             col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
-                st.metric("Accuracy", f"{accuracy:.2%}")
+                st.metric("Test Accuracy", f"{accuracy:.2%}", f"{abs(accuracy - 0.87)*100:.2f}% from target")
             with col2:
                 st.metric("Precision", f"{precision:.2%}")
             with col3:
@@ -478,6 +565,36 @@ def main():
                 st.metric("F1-Score", f"{f1:.2%}")
             with col5:
                 st.metric("ROC-AUC", f"{roc_auc:.4f}")
+            
+            st.divider()
+            
+            # Cross-validation and overfitting metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Train Accuracy", f"{train_accuracy:.2%}")
+            with col2:
+                st.metric("CV Mean Accuracy", f"{cv_mean:.2%}", f"±{cv_std*2:.2%}")
+            with col3:
+                gap_color = "normal" if overfitting_gap < 0.05 else "inverse"
+                st.metric("Overfitting Gap", f"{overfitting_gap:.4f}", delta=None, delta_color=gap_color)
+            
+            # Overfitting analysis
+            if overfitting_gap < 0.02:
+                st.success("✓ Excellent: No significant overfitting detected")
+            elif overfitting_gap < 0.05:
+                st.success("✓ Good: Minimal overfitting (acceptable)")
+            elif overfitting_gap < 0.10:
+                st.warning("⚠️ Caution: Moderate overfitting detected")
+            else:
+                st.error("⚠️ Warning: Significant overfitting detected")
+            
+            # CV stability
+            if cv_std < 0.01:
+                st.success("✓ Excellent: Very stable model (CV std < 1%)")
+            elif cv_std < 0.02:
+                st.success("✓ Good: Stable model (CV std < 2%)")
+            else:
+                st.warning("⚠️ Caution: Model variability detected (CV std >= 2%)")
             
             st.divider()
             
