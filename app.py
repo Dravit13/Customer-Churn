@@ -11,8 +11,7 @@ import seaborn as sns
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.decomposition import PCA
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, roc_curve, confusion_matrix, classification_report
@@ -218,28 +217,16 @@ class ChurnPredictor:
         return X, y
     
     def train_models(self, X_train_scaled, X_test_scaled, y_train, y_test):
-        """Train multiple models with cross-validation and overfitting detection"""
+        """Train Random Forest model with cross-validation and overfitting detection"""
         models_config = {
-            'Logistic Regression': {
-                'model': LogisticRegression(random_state=42, max_iter=1000),
-                'params': {'C': [0.1, 1.0, 10.0], 'penalty': ['l1', 'l2'], 'solver': ['liblinear']}
-            },
             'Random Forest': {
                 'model': RandomForestClassifier(random_state=42, class_weight='balanced'),
                 'params': {
                     'n_estimators': [50, 100],
-                    'max_depth': [5, 10, 15],
-                    'min_samples_split': [5, 10],
-                    'min_samples_leaf': [2, 4]
-                }
-            },
-            'Gradient Boosting': {
-                'model': GradientBoostingClassifier(random_state=42),
-                'params': {
-                    'n_estimators': [50, 100],
-                    'max_depth': [3, 5, 7],
-                    'learning_rate': [0.01, 0.1],
-                    'subsample': [0.8, 1.0]
+                    'max_depth': [5, 8, 10],  # Reduced max depth to prevent overfitting
+                    'min_samples_split': [10, 20, 30],  # Increased to reduce overfitting
+                    'min_samples_leaf': [4, 6, 8],  # Increased to reduce overfitting
+                    'max_features': ['sqrt', 'log2', 0.5]  # Limit features per tree
                 }
             }
         }
@@ -295,16 +282,8 @@ class ChurnPredictor:
                 'best_params': grid_search.best_params_
             }
         
-        # Select best model - prioritize accuracy close to target with low overfitting
-        scored_models = {}
-        for name, result in results.items():
-            accuracy_score_val = 1 - abs(result['accuracy'] - target_accuracy)
-            overfitting_penalty = max(0, result['overfitting_gap'] - 0.05) * 2
-            roc_bonus = result['roc_auc']
-            final_score = accuracy_score_val * 0.4 + (1 - overfitting_penalty) * 0.3 + roc_bonus * 0.3
-            scored_models[name] = final_score
-        
-        best_model_name = max(scored_models, key=scored_models.get)
+        # Select Random Forest model
+        best_model_name = 'Random Forest'
         self.model = results[best_model_name]['model']
         self.y_pred = results[best_model_name]['y_pred']
         self.y_pred_proba = results[best_model_name]['y_pred_proba']
@@ -527,27 +506,30 @@ def main():
                     st.metric("Variance Retained", f"{predictor.explained_variance_ratio_*100:.2f}%")
                 st.success(f"✓ Features reduced from {X.shape[1]} to {predictor.n_components} while retaining {predictor.explained_variance_ratio_*100:.2f}% variance")
             
-            # Display model comparison
-            st.markdown("### Model Comparison")
+            # Display Random Forest model results
+            st.markdown("### Random Forest Model Results")
+            rf_result = results['Random Forest']
             comparison_df = pd.DataFrame({
-                'Model': list(results.keys()),
-                'Test Accuracy': [results[m]['accuracy'] for m in results.keys()],
-                'Train Accuracy': [results[m]['train_accuracy'] for m in results.keys()],
-                'CV Mean': [results[m]['cv_mean'] for m in results.keys()],
-                'CV Std': [results[m]['cv_std'] for m in results.keys()],
-                'Overfitting Gap': [results[m]['overfitting_gap'] for m in results.keys()],
-                'Precision': [results[m]['precision'] for m in results.keys()],
-                'Recall': [results[m]['recall'] for m in results.keys()],
-                'F1-Score': [results[m]['f1'] for m in results.keys()],
-                'ROC-AUC': [results[m]['roc_auc'] for m in results.keys()]
+                'Metric': ['Test Accuracy', 'Train Accuracy', 'CV Mean', 'CV Std', 'Overfitting Gap', 
+                          'Precision', 'Recall', 'F1-Score', 'ROC-AUC'],
+                'Value': [
+                    f"{rf_result['accuracy']:.4f}",
+                    f"{rf_result['train_accuracy']:.4f}",
+                    f"{rf_result['cv_mean']:.4f}",
+                    f"{rf_result['cv_std']:.4f}",
+                    f"{rf_result['overfitting_gap']:.4f}",
+                    f"{rf_result['precision']:.4f}",
+                    f"{rf_result['recall']:.4f}",
+                    f"{rf_result['f1']:.4f}",
+                    f"{rf_result['roc_auc']:.4f}"
+                ]
             })
-            comparison_df = comparison_df.sort_values('ROC-AUC', ascending=False)
-            st.dataframe(comparison_df.style.highlight_max(axis=0, color='#d4edda'), use_container_width=True)
+            st.dataframe(comparison_df, use_container_width=True, hide_index=True)
             
-            best_result = results[best_model]
+            best_result = results[best_model_name]
             pca_info = f"\n- PCA: {X.shape[1]} → {predictor.n_components} features ({predictor.explained_variance_ratio_*100:.2f}% variance)" if predictor.use_pca else ""
             st.info(f"""
-            🏆 **Best Model:** {best_model}
+            🏆 **Best Model:** {best_model_name}
             - Test Accuracy: {best_result['accuracy']:.2%}
             - CV Mean Accuracy: {best_result['cv_mean']:.2%} (±{best_result['cv_std']*2:.2%})
             - Overfitting Gap: {best_result['overfitting_gap']:.4f}

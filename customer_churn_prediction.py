@@ -18,8 +18,7 @@ import seaborn as sns
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, GridSearchCV
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.decomposition import PCA
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, roc_curve, confusion_matrix, classification_report
@@ -307,34 +306,22 @@ class ChurnPredictor:
         return self.X_train_scaled, self.X_test_scaled, self.y_train, self.y_test
     
     def train_models(self):
-        """Train multiple models with cross-validation and overfitting detection"""
+        """Train Random Forest model with cross-validation and overfitting detection"""
         print("\n" + "=" * 60)
-        print("STEP 6: Model Training with Cross-Validation")
+        print("STEP 6: Model Training with Cross-Validation (Random Forest)")
         print("=" * 60)
         
-        # Define models with regularization to prevent overfitting
+        # Define Random Forest model with regularization to prevent overfitting
         # Target accuracy: ~87%
         models_config = {
-            'Logistic Regression': {
-                'model': LogisticRegression(random_state=42, max_iter=1000),
-                'params': {'C': [0.1, 1.0, 10.0], 'penalty': ['l1', 'l2'], 'solver': ['liblinear']}
-            },
             'Random Forest': {
                 'model': RandomForestClassifier(random_state=42, class_weight='balanced'),
                 'params': {
                     'n_estimators': [50, 100],
-                    'max_depth': [5, 10, 15],
-                    'min_samples_split': [5, 10],
-                    'min_samples_leaf': [2, 4]
-                }
-            },
-            'Gradient Boosting': {
-                'model': GradientBoostingClassifier(random_state=42),
-                'params': {
-                    'n_estimators': [50, 100],
-                    'max_depth': [3, 5, 7],
-                    'learning_rate': [0.01, 0.1],
-                    'subsample': [0.8, 1.0]
+                    'max_depth': [5, 8, 10],  # Reduced max depth to prevent overfitting
+                    'min_samples_split': [10, 20, 30],  # Increased to reduce overfitting
+                    'min_samples_leaf': [4, 6, 8],  # Increased to reduce overfitting
+                    'max_features': ['sqrt', 'log2', 0.5]  # Limit features per tree
                 }
             }
         }
@@ -426,23 +413,12 @@ class ChurnPredictor:
             print(f"    F1-Score: {f1:.4f}")
             print(f"    ROC-AUC: {roc_auc:.4f}")
         
-        # Select best model - prioritize models close to target accuracy with low overfitting
+        # Select best model (only Random Forest)
         print(f"\n{'='*60}")
-        print("Model Selection (Target Accuracy: 87%)")
+        print("Model Selection (Random Forest)")
         print(f"{'='*60}")
         
-        # Score models: prefer accuracy close to target, low overfitting, high ROC-AUC
-        scored_models = {}
-        for name, result in results.items():
-            # Calculate score: penalize deviation from target accuracy, overfitting, reward ROC-AUC
-            accuracy_score_val = 1 - abs(result['accuracy'] - target_accuracy)
-            overfitting_penalty = max(0, result['overfitting_gap'] - 0.05) * 2
-            roc_bonus = result['roc_auc']
-            
-            final_score = accuracy_score_val * 0.4 + (1 - overfitting_penalty) * 0.3 + roc_bonus * 0.3
-            scored_models[name] = final_score
-        
-        best_model_name = max(scored_models, key=scored_models.get)
+        best_model_name = 'Random Forest'
         best_result = results[best_model_name]
         
         print(f"\n✓ Selected Model: {best_model_name}")
@@ -450,6 +426,13 @@ class ChurnPredictor:
         print(f"  CV Mean Accuracy: {best_result['cv_mean']:.4f} (+/- {best_result['cv_std']*2:.4f})")
         print(f"  Overfitting Gap: {best_result['overfitting_gap']:.4f}")
         print(f"  ROC-AUC: {best_result['roc_auc']:.4f}")
+        
+        # Check overfitting and suggest improvements if needed
+        if best_result['overfitting_gap'] > 0.05:
+            print(f"\n⚠ Overfitting detected! Consider:")
+            print(f"  - Further reducing max_depth")
+            print(f"  - Increasing min_samples_split and min_samples_leaf")
+            print(f"  - Using max_features='sqrt' or 'log2'")
         
         # Check if target accuracy is achieved
         if abs(best_result['accuracy'] - target_accuracy) < 0.02:
